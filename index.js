@@ -18,6 +18,7 @@ const invoiceRoutes = require("./routes/invoiceRoutes");
 const billRoutes = require("./routes/billRoutes");
 const supplierRoutes = require("./routes/supplierRoutes");
 const serviceCategoryRoutes = require("./routes/serviceCategoryRoutes");
+const propertyRoutes = require("./routes/propertyRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -86,6 +87,7 @@ app.use("/api/invoices", invoiceRoutes);
 app.use("/api/bills", billRoutes);
 app.use("/api/supplier", supplierRoutes);
 app.use("/api/service-categories", serviceCategoryRoutes);
+app.use("/api/properties", propertyRoutes);
 
 // 404 handler
 app.use((req, res) => {
