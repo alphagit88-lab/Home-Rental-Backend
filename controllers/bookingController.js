@@ -37,6 +37,10 @@ const createServiceRequest = async (req, res) => {
       selected_services,
       estimated_price,
     } = req.body;
+    
+    console.log(`Booking request category: ${service_category}`);
+    console.log(`Booking coordinates: lat=${latitude}, lon=${longitude}`);
+    console.log(`Booking location text: ${location}`);
 
     // Handle stringified JSON from FormData
     if (typeof bins === 'string') {
@@ -64,7 +68,7 @@ const createServiceRequest = async (req, res) => {
 
     if (service_category === 'service') {
       // Find suppliers covering the location for general services
-      qualifiedSuppliers = await User.findQualifiedSuppliersForService(location);
+      qualifiedSuppliers = await User.findQualifiedSuppliersForService(latitude, longitude, location);
     } else {
       // Validation and supplier search for bins
       if (bins && Array.isArray(bins) && bins.length > 0) {
@@ -87,7 +91,7 @@ const createServiceRequest = async (req, res) => {
         });
       }
 
-      qualifiedSuppliers = await User.findQualifiedSuppliersForMultipleBins(orderItems, location);
+      qualifiedSuppliers = await User.findQualifiedSuppliersForMultipleBins(orderItems, latitude, longitude, location);
       if (qualifiedSuppliers.length > 0 && !finalEstimatedPrice) {
         finalEstimatedPrice = parseFloat(qualifiedSuppliers[0].total_price) || 0;
       }
@@ -97,7 +101,7 @@ const createServiceRequest = async (req, res) => {
       cleanupFile();
       return res.status(404).json({
         success: false,
-        message: 'Service unavailable: No suppliers found in your area.',
+        message: 'Service unavailable: No suppliers found in your area',
       });
     }
 
@@ -345,7 +349,7 @@ const acceptRequest = async (req, res) => {
 
     // Use the admin-approved price stored in the request
     const totalAmount = parseFloat(request.estimated_price);
-    
+
     if (isNaN(totalAmount) || totalAmount <= 0) {
       return res.status(400).json({
         success: false,
@@ -640,7 +644,7 @@ const updateRequestStatus = async (req, res) => {
 
         // Verify bin matches order item requirements (Type and Size)
         const typeMatch = bin.bin_type_id === orderItem.bin_type_id;
-        
+
         // Handle null sizes for both bin and order item correctly
         const binSizeId = bin.bin_size_id === null ? null : parseInt(bin.bin_size_id);
         const orderItemSizeId = orderItem.bin_size_id === null ? null : parseInt(orderItem.bin_size_id);
@@ -674,7 +678,7 @@ const updateRequestStatus = async (req, res) => {
     } else {
       // Update request status
       const updateData = { status };
-      
+
       // If delivery photo is uploaded, add it to the update data
       if (status === 'delivered' && req.file) {
         updateData.delivery_photo_url = `/uploads/${req.file.filename}`;

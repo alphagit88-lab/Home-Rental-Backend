@@ -163,13 +163,18 @@ class User {
   }
 
   // Find suppliers who have available bins matching the requirements (single bin)
-  static async findQualifiedSuppliers(binTypeId, binSizeId, location = null) {
+  static async findQualifiedSuppliers(binTypeId, binSizeId, latitude = null, longitude = null, locationText = null) {
     const values = [binTypeId, binSizeId];
+    const lat = parseFloat(latitude);
+    const lon = parseFloat(longitude);
     let locationCondition = '';
     
-    if (location) {
-      values.push(location);
-      locationCondition = `AND location_match.city_match = true`;
+    if (!isNaN(lat) && !isNaN(lon)) {
+      values.push(lat, lon);
+      locationCondition = `AND (6371 * acos(cos(radians($3)) * cos(radians(sa.latitude)) * cos(radians(sa.longitude) - radians($4)) + sin(radians($3)) * sin(radians(sa.latitude)))) <= sa.area_radius_km`;
+    } else if (locationText) {
+      values.push(locationText);
+      locationCondition = `AND $3 ILIKE '%' || sa.city || '%'`;
     }
 
     const query = `
@@ -184,7 +189,6 @@ class User {
       INNER JOIN physical_bins pb ON u.id = pb.supplier_id
       INNER JOIN service_areas sa ON u.id = sa.supplier_id
       INNER JOIN service_area_bins sab ON sa.id = sab.service_area_id
-      ${location ? `, LATERAL (SELECT $3 ILIKE '%' || sa.city || '%' as city_match) location_match` : ''}
       WHERE u.role = 'supplier'
         AND pb.bin_type_id = $1
         AND pb.bin_size_id IS NOT DISTINCT FROM $2
@@ -202,9 +206,8 @@ class User {
     return result.rows;
   }
 
-  // Find suppliers who have ALL required bins available AND Active pricing configured
   // orderItems should be an array of { bin_type_id, bin_size_id, quantity }
-  static async findQualifiedSuppliersForMultipleBins(orderItems, location = null) {
+  static async findQualifiedSuppliersForMultipleBins(orderItems, latitude = null, longitude = null, locationText = null) {
     const binRequirements = orderItems.map((item) => {
       const typeId = parseInt(item.bin_type_id);
       const rawSizeId = item.bin_size_id;
@@ -227,10 +230,17 @@ class User {
     const values = [];
     let paramCount = 1;
 
-    // 1. Matched Suppliers (Location check)
+    // 1. Matched Suppliers (Radius check with city fallback)
     let locationFilter = '';
-    if (location) {
-      values.push(location);
+    const lat = parseFloat(latitude);
+    const lon = parseFloat(longitude);
+
+    if (!isNaN(lat) && !isNaN(lon)) {
+      values.push(lat, lon);
+      locationFilter = `AND (6371 * acos(cos(radians($1)) * cos(radians(sa.latitude)) * cos(radians(sa.longitude) - radians($2)) + sin(radians($1)) * sin(radians(sa.latitude)))) <= sa.area_radius_km`;
+      paramCount = 3;
+    } else if (locationText) {
+      values.push(locationText);
       locationFilter = `AND $1 ILIKE '%' || sa.city || '%'`;
       paramCount = 2;
     }
@@ -310,8 +320,21 @@ class User {
   }
 
   // Find suppliers who cover the given location (for service requests without specific bins)
-  static async findQualifiedSuppliersForService(location) {
-    if (!location) return [];
+  static async findQualifiedSuppliersForService(latitude, longitude, locationText) {
+    const lat = parseFloat(latitude);
+    const lon = parseFloat(longitude);
+    const values = [];
+    let locationCondition = '';
+
+    if (!isNaN(lat) && !isNaN(lon)) {
+      values.push(lat, lon);
+      locationCondition = `AND (6371 * acos(cos(radians($1)) * cos(radians(sa.latitude)) * cos(radians(sa.longitude) - radians($2)) + sin(radians($1)) * sin(radians(sa.latitude)))) <= sa.area_radius_km`;
+    } else if (locationText) {
+      values.push(locationText);
+      locationCondition = `AND $1 ILIKE '%' || sa.city || '%'`;
+    } else {
+      return [];
+    }
 
     const query = `
       SELECT DISTINCT
@@ -323,10 +346,10 @@ class User {
       FROM users u
       INNER JOIN service_areas sa ON u.id = sa.supplier_id
       WHERE u.role = 'supplier'
-        AND $1 ILIKE '%' || sa.city || '%'
+        ${locationCondition}
       ORDER BY u.name
     `;
-    const result = await pool.query(query, [location]);
+    const result = await pool.query(query, values);
     return result.rows;
   }
 }

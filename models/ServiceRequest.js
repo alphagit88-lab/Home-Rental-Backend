@@ -310,7 +310,11 @@ class ServiceRequest {
         AND EXISTS (
             SELECT 1 FROM service_areas sa
             WHERE sa.supplier_id = $1
-            AND sr.location ILIKE '%' || sa.city || '%'
+            AND (
+                (sr.latitude IS NOT NULL AND sr.longitude IS NOT NULL AND sa.latitude IS NOT NULL AND sa.longitude IS NOT NULL 
+                 AND (6371 * acos(cos(radians(sr.latitude)) * cos(radians(sa.latitude)) * cos(radians(sa.longitude) - radians(sr.longitude)) + sin(radians(sr.latitude)) * sin(radians(sa.latitude)))) <= sa.area_radius_km)
+                OR ((sr.latitude IS NULL OR sr.longitude IS NULL OR sa.latitude IS NULL OR sa.longitude IS NULL) AND sr.location ILIKE '%' || sa.city || '%')
+            )
         )
       `;
     }
