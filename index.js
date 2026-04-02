@@ -22,7 +22,7 @@ const propertyRoutes = require("./routes/propertyRoutes");
 
 const app = express();
 const server = http.createServer(app);
-const HOST = process.env.HOST || "127.0.0.1";
+const HOST = process.env.HOST || "0.0.0.0";
 
 // Allowed origins for CORS
 const allowedOrigins = [
@@ -155,7 +155,7 @@ io.on("connection", (socket) => {
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, HOST, () => {
-  console.log(`🚀 Backend server running on http://localhost:${PORT}`);
-  console.log(`📝 Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`🔌 Socket.io server initialized`);
+  console.log(`Backend server listening on ${HOST}:${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+  console.log("Socket.io server initialized");
 });
