@@ -45,10 +45,30 @@ const verifyRole = (roles) => {
   };
 };
 
+const verifyAppRole = (appRoles, options = {}) => {
+  const allowAdmin = options.allowAdmin !== false;
+
+  return (req, res, next) => {
+    if (allowAdmin && req.user.role === 'admin') {
+      return next();
+    }
+
+    if (!req.user.appRole || !appRoles.includes(req.user.appRole)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: invalid application role',
+      });
+    }
+
+    next();
+  };
+};
+
 module.exports = {
   authenticate,
   verifyToken: authenticate,
   requireAdmin,
   verifyAdmin: requireAdmin,
   verifyRole,
+  verifyAppRole,
 };

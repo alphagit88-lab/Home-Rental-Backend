@@ -13,6 +13,10 @@ const APP_ROLE_MAP = {
     systemRole: "supplier",
     supplierType: "residential",
   },
+  service_provider: {
+    systemRole: "supplier",
+    supplierType: null,
+  },
 };
 
 const buildToken = (account) =>
@@ -68,7 +72,7 @@ const signup = async (req, res) => {
     if (!roleConfig) {
       return res.status(400).json({
         success: false,
-        message: "Invalid role. Use tenant or owner.",
+        message: "Invalid role. Use tenant, owner, or service_provider.",
       });
     }
 

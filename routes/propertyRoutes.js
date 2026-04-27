@@ -6,25 +6,25 @@ const {
   createProperty,
   updateProperty,
 } = require("../controllers/propertyController");
-const { authenticate, verifyRole } = require("../middleware/authMiddleware");
+const { authenticate, verifyAppRole } = require("../middleware/authMiddleware");
 
 router.get("/", getActiveProperties);
 router.get(
   "/my",
   authenticate,
-  verifyRole(["supplier", "admin"]),
+  verifyAppRole(["owner"]),
   getMyProperties,
 );
 router.post(
   "/",
   authenticate,
-  verifyRole(["supplier", "admin"]),
+  verifyAppRole(["owner"]),
   createProperty,
 );
 router.put(
   "/:id",
   authenticate,
-  verifyRole(["supplier", "admin"]),
+  verifyAppRole(["owner"]),
   updateProperty,
 );
 
