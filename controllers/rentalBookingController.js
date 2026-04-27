@@ -1,5 +1,7 @@
 const pool = require("../config/database");
 const RentalBooking = require("../models/RentalBooking");
+const ServiceCategory = require("../models/ServiceCategory");
+const RentalBookingServiceRequest = require("../models/RentalBookingServiceRequest");
 
 const buildBookingCode = () =>
   `RB-${Date.now().toString(36).toUpperCase()}-${Math.random()
@@ -52,9 +54,9 @@ const expandStayDates = (checkIn, checkOut) => {
   const normalizedCheckOut = toDateString(checkOut);
 
   if (
-    !normalizedCheckIn ||
-    !normalizedCheckOut ||
-    normalizedCheckOut <= normalizedCheckIn
+    !normalizedCheckIn
+    || !normalizedCheckOut
+    || normalizedCheckOut <= normalizedCheckIn
   ) {
     return [];
   }
@@ -84,8 +86,48 @@ const getTodayIsoDate = () => {
   ).padStart(2, "0")}-${String(today.getUTCDate()).padStart(2, "0")}`;
 };
 
-const getPropertyById = async (propertyId) => {
-  const result = await pool.query(
+const parseServiceCategoryIds = (...candidateValues) => {
+  const rawValue = candidateValues.find(
+    (value) => value !== undefined && value !== null && value !== "",
+  );
+
+  if (rawValue === undefined) {
+    return [];
+  }
+
+  let parsedValues = rawValue;
+
+  if (typeof parsedValues === "string") {
+    const trimmedValue = parsedValues.trim();
+
+    if (!trimmedValue) {
+      return [];
+    }
+
+    if (trimmedValue.startsWith("[")) {
+      try {
+        parsedValues = JSON.parse(trimmedValue);
+      } catch (error) {
+        parsedValues = trimmedValue.split(",");
+      }
+    } else {
+      parsedValues = trimmedValue.split(",");
+    }
+  }
+
+  if (!Array.isArray(parsedValues)) {
+    parsedValues = [parsedValues];
+  }
+
+  return [...new Set(
+    parsedValues
+      .map((value) => parseInt(value, 10))
+      .filter((value) => Number.isInteger(value) && value > 0),
+  )];
+};
+
+const getPropertyById = async (propertyId, client = pool) => {
+  const result = await client.query(
     `
       SELECT
         id,
@@ -93,6 +135,8 @@ const getPropertyById = async (propertyId) => {
         property_code AS "propertyCode",
         title,
         location_text AS "locationText",
+        latitude,
+        longitude,
         monthly_rent AS "monthlyRent",
         available_from AS "availableFrom",
         available_to AS "availableTo",
@@ -107,10 +151,17 @@ const getPropertyById = async (propertyId) => {
   return result.rows[0];
 };
 
+const attachServiceRequests = async (bookings) => {
+  await RentalBookingServiceRequest.attachToBookings(bookings);
+  return bookings;
+};
+
 const getMyBookings = async (req, res) => {
   try {
     const limit = toPositiveInteger(req.query.limit);
     const bookings = await RentalBooking.findByTenant(req.user.id, { limit });
+
+    await attachServiceRequests(bookings);
 
     res.json({
       success: true,
@@ -144,6 +195,8 @@ const getOwnerBookings = async (req, res) => {
       to,
       limit,
     });
+
+    await attachServiceRequests(bookings);
 
     res.json({
       success: true,
@@ -232,6 +285,9 @@ const getPropertyAvailability = async (req, res) => {
 };
 
 const createBooking = async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+
   try {
     const propertyId = toPositiveInteger(
       req.body.propertyId || req.body.property_id,
@@ -258,6 +314,17 @@ const createBooking = async (req, res) => {
     const cardLast4 = String(req.body.cardLast4 || req.body.card_last4 || "")
       .replace(/\D/g, "")
       .slice(-4);
+    const requestedServiceCategoryIds = parseServiceCategoryIds(
+      req.body.serviceCategoryIds,
+      req.body.service_category_ids,
+      req.body.selectedServiceIds,
+      req.body.selected_service_ids,
+      req.body.selectedServices,
+      req.body.selected_services,
+    );
+    const serviceNotes = String(
+      req.body.serviceNotes || req.body.service_notes || "",
+    ).trim();
 
     if (!propertyId || !guestCount || !checkIn || !checkOut) {
       return res.status(400).json({
@@ -280,9 +347,34 @@ const createBooking = async (req, res) => {
       });
     }
 
-    const property = await getPropertyById(propertyId);
+    let selectedServiceCategories = [];
+    if (requestedServiceCategoryIds.length > 0) {
+      selectedServiceCategories = await ServiceCategory.findByIds(
+        requestedServiceCategoryIds,
+      );
+
+      if (selectedServiceCategories.length !== requestedServiceCategoryIds.length) {
+        return res.status(400).json({
+          success: false,
+          message: "One or more selected service categories are invalid or inactive",
+        });
+      }
+    }
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    await client.query(
+      "SELECT id FROM rental_properties WHERE id = $1 FOR UPDATE",
+      [propertyId],
+    );
+
+    const property = await getPropertyById(propertyId, client);
 
     if (!property || !property.isActive) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
       return res.status(404).json({
         success: false,
         message: "Property not found",
@@ -290,6 +382,9 @@ const createBooking = async (req, res) => {
     }
 
     if (property.availableFrom && checkIn < property.availableFrom) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
       return res.status(400).json({
         success: false,
         message: "checkIn is before the property availableFrom date",
@@ -297,6 +392,9 @@ const createBooking = async (req, res) => {
     }
 
     if (property.availableTo && checkOut > property.availableTo) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
       return res.status(400).json({
         success: false,
         message: "checkOut is after the property availableTo date",
@@ -307,9 +405,13 @@ const createBooking = async (req, res) => {
       propertyId,
       checkIn,
       checkOut,
+      client,
     );
 
     if (conflicts.length > 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
       return res.status(409).json({
         success: false,
         message: "The selected stay dates are already booked",
@@ -321,24 +423,47 @@ const createBooking = async (req, res) => {
         ? null
         : Number(property.monthlyRent);
 
-    const booking = await RentalBooking.create({
-      bookingCode: buildBookingCode(),
-      propertyId,
-      ownerId: property.ownerId,
-      tenantId: req.user.id,
-      tenantName: contactName,
-      tenantEmail: contactEmail,
-      checkIn,
-      checkOut,
-      guestCount,
-      bookingStatus: "confirmed",
-      paymentStatus: "paid",
-      paymentMethod,
-      paymentReference: paymentReference || null,
-      cardLast4: cardLast4 || null,
-      totalAmount,
-      notes: req.body.notes || null,
-    });
+    const booking = await RentalBooking.create(
+      {
+        bookingCode: buildBookingCode(),
+        propertyId,
+        ownerId: property.ownerId,
+        tenantId: req.user.id,
+        tenantName: contactName,
+        tenantEmail: contactEmail,
+        checkIn,
+        checkOut,
+        guestCount,
+        bookingStatus: "confirmed",
+        paymentStatus: "paid",
+        paymentMethod,
+        paymentReference: paymentReference || null,
+        cardLast4: cardLast4 || null,
+        totalAmount,
+        notes: req.body.notes || null,
+      },
+      client,
+    );
+
+    const serviceRequests = await RentalBookingServiceRequest.createMany(
+      {
+        rentalBookingId: booking.id,
+        propertyId: booking.propertyId,
+        tenantId: req.user.id,
+        ownerId: property.ownerId,
+        serviceCategoryIds: selectedServiceCategories.map((category) => category.id),
+        tenantNotes: serviceNotes || null,
+        locationText: property.locationText,
+        latitude: property.latitude,
+        longitude: property.longitude,
+      },
+      client,
+    );
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    booking.serviceRequests = serviceRequests;
 
     res.status(201).json({
       success: true,
@@ -346,12 +471,18 @@ const createBooking = async (req, res) => {
       data: { booking },
     });
   } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+
     console.error("Create rental booking error:", error);
     res.status(500).json({
       success: false,
       message: "Error creating booking",
       error: error.message,
     });
+  } finally {
+    client.release();
   }
 };
 

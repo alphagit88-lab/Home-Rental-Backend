@@ -20,6 +20,7 @@ const supplierRoutes = require("./routes/supplierRoutes");
 const serviceCategoryRoutes = require("./routes/serviceCategoryRoutes");
 const propertyRoutes = require("./routes/propertyRoutes");
 const rentalBookingRoutes = require("./routes/rentalBookingRoutes");
+const rentalServiceRequestRoutes = require("./routes/rentalServiceRequestRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -90,6 +91,7 @@ app.use("/api/supplier", supplierRoutes);
 app.use("/api/service-categories", serviceCategoryRoutes);
 app.use("/api/properties", propertyRoutes);
 app.use("/api/rental-bookings", rentalBookingRoutes);
+app.use("/api/rental-service-requests", rentalServiceRequestRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -132,6 +134,7 @@ io.use((socket, next) => {
     const decoded = jwt.verify(token, jwtConfig.secret);
     socket.userId = decoded.id;
     socket.userRole = decoded.role;
+    socket.userAppRole = decoded.appRole;
     next();
   } catch (error) {
     next(new Error("Authentication error"));
@@ -147,6 +150,10 @@ io.on("connection", (socket) => {
   } else if (socket.userRole === "supplier") {
     socket.join(`supplier_${socket.userId}`);
     socket.join("suppliers");
+
+    if (socket.userAppRole === "service_provider") {
+      socket.join(`service_provider_${socket.userId}`);
+    }
   }
 
   socket.on("disconnect", () => {
@@ -155,6 +162,18 @@ io.on("connection", (socket) => {
 });
 
 const PORT = process.env.PORT || 5000;
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(
+      `Port ${PORT} is already in use. Stop the existing server or change PORT in .env before starting a new instance.`,
+    );
+    process.exit(1);
+  }
+
+  console.error("Server startup error:", error);
+  process.exit(1);
+});
 
 server.listen(PORT, HOST, () => {
   console.log(`Backend server listening on ${HOST}:${PORT}`);

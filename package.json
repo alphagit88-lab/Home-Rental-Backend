@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node index.js",
-    "migrate": "node utils/runMigration.js"
+    "migrate": "node utils/runMigration.js",
+    "migration:generate": "node utils/generateMigration.js"
   },
   "keywords": [],
   "author": "",

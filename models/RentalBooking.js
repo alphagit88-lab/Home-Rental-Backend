@@ -24,6 +24,8 @@ const SELECT_FIELDS = `
     rp.property_code AS "propertyCode",
     rp.title AS "propertyTitle",
     rp.location_text AS "propertyLocationText",
+    rp.latitude AS "propertyLatitude",
+    rp.longitude AS "propertyLongitude",
     rp.monthly_rent AS "monthlyRent",
     owner_user.name AS "ownerName"
   FROM rental_bookings rb
@@ -32,8 +34,8 @@ const SELECT_FIELDS = `
 `;
 
 class RentalBooking {
-  static async findById(id) {
-    const result = await pool.query(
+  static async findById(id, client = pool) {
+    const result = await client.query(
       `
         ${SELECT_FIELDS}
         WHERE rb.id = $1
@@ -45,7 +47,7 @@ class RentalBooking {
     return result.rows[0];
   }
 
-  static async findByTenant(tenantId, { limit } = {}) {
+  static async findByTenant(tenantId, { limit } = {}, client = pool) {
     const values = [tenantId];
     let limitClause = "";
 
@@ -54,7 +56,7 @@ class RentalBooking {
       limitClause = `LIMIT $${values.length}`;
     }
 
-    const result = await pool.query(
+    const result = await client.query(
       `
         ${SELECT_FIELDS}
         WHERE rb.tenant_id = $1
@@ -67,7 +69,7 @@ class RentalBooking {
     return result.rows;
   }
 
-  static async findByOwner(ownerId, { from, to, limit } = {}) {
+  static async findByOwner(ownerId, { from, to, limit } = {}, client = pool) {
     const values = [ownerId];
     const filters = ["rb.owner_id = $1"];
 
@@ -88,7 +90,7 @@ class RentalBooking {
       limitClause = `LIMIT $${values.length}`;
     }
 
-    const result = await pool.query(
+    const result = await client.query(
       `
         ${SELECT_FIELDS}
         WHERE ${filters.join(" AND ")}
@@ -101,7 +103,11 @@ class RentalBooking {
     return result.rows;
   }
 
-  static async findAvailabilityByProperty(propertyId, { from, to } = {}) {
+  static async findAvailabilityByProperty(
+    propertyId,
+    { from, to } = {},
+    client = pool,
+  ) {
     const values = [propertyId];
     const filters = [
       "rb.property_id = $1",
@@ -118,7 +124,7 @@ class RentalBooking {
       filters.push(`rb.check_in <= $${values.length}`);
     }
 
-    const result = await pool.query(
+    const result = await client.query(
       `
         ${SELECT_FIELDS}
         WHERE ${filters.join(" AND ")}
@@ -130,8 +136,8 @@ class RentalBooking {
     return result.rows;
   }
 
-  static async findConflicts(propertyId, checkIn, checkOut) {
-    const result = await pool.query(
+  static async findConflicts(propertyId, checkIn, checkOut, client = pool) {
+    const result = await client.query(
       `
         ${SELECT_FIELDS}
         WHERE rb.property_id = $1
@@ -146,8 +152,8 @@ class RentalBooking {
     return result.rows;
   }
 
-  static async create(data) {
-    const result = await pool.query(
+  static async create(data, client = pool) {
+    const result = await client.query(
       `
         INSERT INTO rental_bookings (
           booking_code,
@@ -196,7 +202,7 @@ class RentalBooking {
       ],
     );
 
-    return this.findById(result.rows[0].id);
+    return this.findById(result.rows[0].id, client);
   }
 }
 

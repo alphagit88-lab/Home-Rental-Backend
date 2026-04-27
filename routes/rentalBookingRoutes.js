@@ -13,7 +13,7 @@ const {
   validateRentalBookingDateQuery,
 } = require("../middleware/rentalBookingValidation");
 
-const { authenticate, verifyRole } = require("../middleware/authMiddleware");
+const { authenticate, verifyAppRole } = require("../middleware/authMiddleware");
 
 router.get(
   "/property/:propertyId/availability",
@@ -24,14 +24,14 @@ router.get(
 router.get(
   "/my",
   authenticate,
-  verifyRole(["customer", "admin"]),
+  verifyAppRole(["tenant"]),
   getMyBookings,
 );
 
 router.get(
   "/owner",
   authenticate,
-  verifyRole(["supplier", "admin"]),
+  verifyAppRole(["owner"]),
   validateRentalBookingDateQuery,
   getOwnerBookings,
 );
@@ -39,7 +39,7 @@ router.get(
 router.post(
   "/",
   authenticate,
-  verifyRole(["customer", "admin"]),
+  verifyAppRole(["tenant"]),
   validateCreateRentalBooking,
   createBooking,
 );

@@ -40,8 +40,8 @@ const validateRentalSignup = [
     .trim()
     .notEmpty()
     .withMessage("Role is required")
-    .isIn(["tenant", "owner"])
-    .withMessage("Invalid role. Use tenant or owner."),
+    .isIn(["tenant", "owner", "service_provider"])
+    .withMessage("Invalid role. Use tenant, owner, or service_provider."),
 
   handleValidationErrors,
 ];

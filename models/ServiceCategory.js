@@ -21,6 +21,28 @@ class ServiceCategory {
     return result.rows[0];
   }
 
+  static async findByIds(ids = []) {
+    const normalizedIds = [...new Set(
+      ids
+        .map((id) => parseInt(id, 10))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    )];
+
+    if (normalizedIds.length === 0) {
+      return [];
+    }
+
+    const query = `
+      SELECT *
+      FROM service_categories
+      WHERE is_active = true
+        AND id = ANY($1::int[])
+      ORDER BY name ASC
+    `;
+    const result = await pool.query(query, [normalizedIds]);
+    return result.rows;
+  }
+
   static async create({ name, description }) {
     const query = `
       INSERT INTO service_categories (name, description, created_at, updated_at)
