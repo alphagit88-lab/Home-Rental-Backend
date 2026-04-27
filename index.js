@@ -19,6 +19,7 @@ const billRoutes = require("./routes/billRoutes");
 const supplierRoutes = require("./routes/supplierRoutes");
 const serviceCategoryRoutes = require("./routes/serviceCategoryRoutes");
 const propertyRoutes = require("./routes/propertyRoutes");
+const rentalBookingRoutes = require("./routes/rentalBookingRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -88,6 +89,7 @@ app.use("/api/bills", billRoutes);
 app.use("/api/supplier", supplierRoutes);
 app.use("/api/service-categories", serviceCategoryRoutes);
 app.use("/api/properties", propertyRoutes);
+app.use("/api/rental-bookings", rentalBookingRoutes);
 
 // 404 handler
 app.use((req, res) => {
