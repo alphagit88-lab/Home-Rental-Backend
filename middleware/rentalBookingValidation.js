@@ -124,7 +124,55 @@ const validateCreateRentalBooking = (req, res, next) => {
   next();
 };
 
+const validateRentalBookingPayment = (req, res, next) => {
+  const paymentMethod = String(
+    req.body.paymentMethod || req.body.payment_method || "",
+  ).trim();
+  const cardLast4 = String(req.body.cardLast4 || req.body.card_last4 || "")
+    .replace(/\D/g, "")
+    .slice(-4);
+
+  if (!paymentMethod) {
+    return res.status(400).json({
+      success: false,
+      message: "paymentMethod is required",
+    });
+  }
+
+  if (cardLast4 && !/^\d{4}$/.test(cardLast4)) {
+    return res.status(400).json({
+      success: false,
+      message: "cardLast4 must contain exactly 4 digits",
+    });
+  }
+
+  next();
+};
+
+const validateRentalBookingReview = (req, res, next) => {
+  const rating = toPositiveInteger(req.body.rating);
+  const comment = req.body.comment === undefined ? "" : String(req.body.comment);
+
+  if (!rating || rating < 1 || rating > 5) {
+    return res.status(400).json({
+      success: false,
+      message: "rating must be a number from 1 to 5",
+    });
+  }
+
+  if (comment.length > 2000) {
+    return res.status(400).json({
+      success: false,
+      message: "comment must be 2000 characters or fewer",
+    });
+  }
+
+  next();
+};
+
 module.exports = {
   validateCreateRentalBooking,
   validateRentalBookingDateQuery,
+  validateRentalBookingPayment,
+  validateRentalBookingReview,
 };

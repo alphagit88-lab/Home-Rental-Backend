@@ -38,6 +38,7 @@ const BASE_SELECT = `
     rb.check_out AS "checkOut",
     rb.guest_count AS "guestCount",
     rb.booking_status AS "bookingStatus",
+    rb.payment_status AS "paymentStatus",
     rp.title AS "propertyTitle",
     tenant.name AS "tenantName",
     tenant.email AS "tenantEmail",
@@ -66,6 +67,11 @@ class RentalBookingServiceRequest {
       return [];
     }
 
+    const initialStatus =
+      data.initialStatus && typeof data.initialStatus === "string"
+        ? data.initialStatus
+        : "pending";
+
     await client.query(
       `
         INSERT INTO rental_booking_service_requests (
@@ -90,14 +96,14 @@ class RentalBookingServiceRequest {
           $4,
           category_id,
           NULL,
-          'pending',
           $5,
           $6,
           $7,
           $8,
+          $9,
           NOW(),
           NOW()
-        FROM UNNEST($9::int[]) AS category_id
+        FROM UNNEST($10::int[]) AS category_id
         ON CONFLICT (rental_booking_id, service_category_id) DO NOTHING
       `,
       [
@@ -105,6 +111,7 @@ class RentalBookingServiceRequest {
         data.propertyId,
         data.tenantId,
         data.ownerId,
+        initialStatus,
         data.tenantNotes || null,
         data.locationText,
         data.latitude,
@@ -117,6 +124,22 @@ class RentalBookingServiceRequest {
     return requests.filter((request) =>
       normalizedCategoryIds.includes(request.serviceCategoryId),
     );
+  }
+
+  static async activateForBooking(bookingId, client = pool) {
+    await client.query(
+      `
+        UPDATE rental_booking_service_requests
+        SET
+          request_status = 'pending',
+          updated_at = NOW()
+        WHERE rental_booking_id = $1
+          AND request_status = 'awaiting_full_payment'
+      `,
+      [bookingId],
+    );
+
+    return this.findByBookingIds([bookingId], client);
   }
 
   static async findById(id, client = pool) {
@@ -212,8 +235,12 @@ class RentalBookingServiceRequest {
           LEFT JOIN rental_booking_service_responses rbsresp
             ON rbsresp.rental_service_request_id = rbsr.id
            AND rbsresp.provider_id = $1
+          JOIN rental_bookings rb
+            ON rb.id = rbsr.rental_booking_id
           WHERE rbsr.request_status = 'pending'
             AND rbsr.service_provider_id IS NULL
+            AND rb.booking_status = 'confirmed'
+            AND rb.payment_status = 'paid'
             AND rbsresp.id IS NULL
             AND (
               (
@@ -327,10 +354,15 @@ class RentalBookingServiceRequest {
           ON hra.user_id = $1
          AND hra.app_role = 'service_provider'
          AND hra.is_active = TRUE
+        JOIN rental_bookings rb
+          ON rb.id = rbsr.rental_booking_id
         JOIN rental_service_provider_categories rspc
           ON rspc.provider_id = $1
          AND rspc.service_category_id = rbsr.service_category_id
         WHERE rbsr.id = $2
+          AND rbsr.request_status = 'pending'
+          AND rb.booking_status = 'confirmed'
+          AND rb.payment_status = 'paid'
           AND EXISTS (
             SELECT 1
             FROM service_areas sa

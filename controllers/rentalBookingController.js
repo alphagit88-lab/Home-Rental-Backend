@@ -1,7 +1,11 @@
 const pool = require("../config/database");
 const RentalBooking = require("../models/RentalBooking");
 const ServiceCategory = require("../models/ServiceCategory");
+const RentalBookingReview = require("../models/RentalBookingReview");
 const RentalBookingServiceRequest = require("../models/RentalBookingServiceRequest");
+
+const DEPOSIT_PERCENTAGE = 0.2;
+const DEPOSIT_WINDOW_HOURS = 24;
 
 const buildBookingCode = () =>
   `RB-${Date.now().toString(36).toUpperCase()}-${Math.random()
@@ -47,6 +51,11 @@ const addDaysToIsoDate = (value, days) => {
   return `${String(parsedDate.getUTCFullYear()).padStart(4, "0")}-${String(
     parsedDate.getUTCMonth() + 1,
   ).padStart(2, "0")}-${String(parsedDate.getUTCDate()).padStart(2, "0")}`;
+};
+
+const addHours = (date, hours) => {
+  const baseDate = date instanceof Date ? date : new Date(date);
+  return new Date(baseDate.getTime() + hours * 60 * 60 * 1000);
 };
 
 const expandStayDates = (checkIn, checkOut) => {
@@ -126,6 +135,45 @@ const parseServiceCategoryIds = (...candidateValues) => {
   )];
 };
 
+const normalizePaymentPayload = (body = {}) => ({
+  paymentMethod: String(body.paymentMethod || body.payment_method || "card").trim(),
+  paymentReference: String(
+    body.paymentReference || body.payment_reference || "",
+  ).trim(),
+  cardLast4: String(body.cardLast4 || body.card_last4 || "")
+    .replace(/\D/g, "")
+    .slice(-4),
+});
+
+const toMoneyCents = (value) => {
+  const parsedValue = Number(value);
+
+  if (!Number.isFinite(parsedValue)) {
+    return null;
+  }
+
+  return Math.max(0, Math.round(parsedValue * 100));
+};
+
+const centsToMoney = (value) => Number((value / 100).toFixed(2));
+
+const buildPaymentPlan = (totalAmount) => {
+  const totalCents = toMoneyCents(totalAmount);
+
+  if (totalCents === null) {
+    return null;
+  }
+
+  const depositCents = Math.round(totalCents * DEPOSIT_PERCENTAGE);
+  const remainingCents = totalCents - depositCents;
+
+  return {
+    totalAmount: centsToMoney(totalCents),
+    depositAmount: centsToMoney(depositCents),
+    remainingAmount: centsToMoney(remainingCents),
+  };
+};
+
 const getPropertyById = async (propertyId, client = pool) => {
   const result = await client.query(
     `
@@ -151,17 +199,76 @@ const getPropertyById = async (propertyId, client = pool) => {
   return result.rows[0];
 };
 
-const attachServiceRequests = async (bookings) => {
-  await RentalBookingServiceRequest.attachToBookings(bookings);
+const attachBookingRelations = async (bookings, client = pool) => {
+  await Promise.all([
+    RentalBookingServiceRequest.attachToBookings(bookings, client),
+    RentalBookingReview.attachToBookings(bookings, client),
+  ]);
+
   return bookings;
+};
+
+const loadBookingWithRelations = async (bookingId, client = pool) => {
+  const booking = await RentalBooking.findById(bookingId, client);
+
+  if (!booking) {
+    return null;
+  }
+
+  await attachBookingRelations([booking], client);
+  return booking;
+};
+
+const canAccessBooking = (booking, user) =>
+  Boolean(
+    booking
+      && user
+      && (
+        user.role === "admin"
+        || parseInt(booking.tenantId, 10) === parseInt(user.id, 10)
+        || parseInt(booking.ownerId, 10) === parseInt(user.id, 10)
+      ),
+  );
+
+const getReviewRolesForUser = (booking, userId) => {
+  if (parseInt(booking.tenantId, 10) === parseInt(userId, 10)) {
+    return {
+      reviewerRole: "tenant",
+      revieweeRole: "owner",
+      revieweeId: booking.ownerId,
+    };
+  }
+
+  if (parseInt(booking.ownerId, 10) === parseInt(userId, 10)) {
+    return {
+      reviewerRole: "owner",
+      revieweeRole: "tenant",
+      revieweeId: booking.tenantId,
+    };
+  }
+
+  return null;
+};
+
+const emitBookingUpdated = (req, booking, eventName = "rental_booking_updated") => {
+  const io = req.app.get("io");
+
+  if (!io || !booking) {
+    return;
+  }
+
+  io.to(`user_${booking.tenantId}`).emit(eventName, { booking });
+  io.to(`supplier_${booking.ownerId}`).emit(eventName, { booking });
 };
 
 const getMyBookings = async (req, res) => {
   try {
     const limit = toPositiveInteger(req.query.limit);
-    const bookings = await RentalBooking.findByTenant(req.user.id, { limit });
 
-    await attachServiceRequests(bookings);
+    await RentalBooking.syncLifecycle();
+
+    const bookings = await RentalBooking.findByTenant(req.user.id, { limit });
+    await attachBookingRelations(bookings);
 
     res.json({
       success: true,
@@ -190,13 +297,14 @@ const getOwnerBookings = async (req, res) => {
       });
     }
 
+    await RentalBooking.syncLifecycle();
+
     const bookings = await RentalBooking.findByOwner(req.user.id, {
       from,
       to,
       limit,
     });
-
-    await attachServiceRequests(bookings);
+    await attachBookingRelations(bookings);
 
     res.json({
       success: true,
@@ -222,6 +330,8 @@ const getPropertyAvailability = async (req, res) => {
         message: "A valid propertyId is required",
       });
     }
+
+    await RentalBooking.syncLifecycle();
 
     const property = await getPropertyById(propertyId);
 
@@ -305,15 +415,7 @@ const createBooking = async (req, res) => {
     )
       .trim()
       .toLowerCase();
-    const paymentMethod = String(
-      req.body.paymentMethod || req.body.payment_method || "card",
-    ).trim();
-    const paymentReference = String(
-      req.body.paymentReference || req.body.payment_reference || "",
-    ).trim();
-    const cardLast4 = String(req.body.cardLast4 || req.body.card_last4 || "")
-      .replace(/\D/g, "")
-      .slice(-4);
+    const preferredPayment = normalizePaymentPayload(req.body);
     const requestedServiceCategoryIds = parseServiceCategoryIds(
       req.body.serviceCategoryIds,
       req.body.service_category_ids,
@@ -364,6 +466,8 @@ const createBooking = async (req, res) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
+    await RentalBooking.syncLifecycle(client);
+
     await client.query(
       "SELECT id FROM rental_properties WHERE id = $1 FOR UPDATE",
       [propertyId],
@@ -378,6 +482,16 @@ const createBooking = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Property not found",
+      });
+    }
+
+    if (property.monthlyRent === null || property.monthlyRent === undefined) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "This property cannot be booked until monthly rent is configured",
       });
     }
 
@@ -418,10 +532,20 @@ const createBooking = async (req, res) => {
       });
     }
 
-    const totalAmount =
-      property.monthlyRent === null || property.monthlyRent === undefined
-        ? null
-        : Number(property.monthlyRent);
+    const paymentPlan = buildPaymentPlan(property.monthlyRent);
+
+    if (!paymentPlan) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "Property pricing is invalid",
+      });
+    }
+
+    const isFullyPaidAtCreation = paymentPlan.totalAmount === 0;
+    const paidAt = isFullyPaidAtCreation ? new Date() : null;
 
     const booking = await RentalBooking.create(
       {
@@ -434,13 +558,20 @@ const createBooking = async (req, res) => {
         checkIn,
         checkOut,
         guestCount,
-        bookingStatus: "confirmed",
-        paymentStatus: "paid",
-        paymentMethod,
-        paymentReference: paymentReference || null,
-        cardLast4: cardLast4 || null,
-        totalAmount,
-        notes: req.body.notes || null,
+        bookingStatus: isFullyPaidAtCreation ? "confirmed" : "pending",
+        paymentStatus: isFullyPaidAtCreation ? "paid" : "deposit_pending",
+        paymentMethod: preferredPayment.paymentMethod || null,
+        paymentReference: null,
+        cardLast4: null,
+        totalAmount: paymentPlan.totalAmount,
+        depositAmount: paymentPlan.depositAmount,
+        depositDueAt: isFullyPaidAtCreation
+          ? null
+          : addHours(new Date(), DEPOSIT_WINDOW_HOURS),
+        depositPaidAt: paidAt,
+        remainingAmount: paymentPlan.remainingAmount,
+        remainingPaidAt: paidAt,
+        notes: req.body.notes ? String(req.body.notes).trim() : null,
       },
       client,
     );
@@ -456,6 +587,9 @@ const createBooking = async (req, res) => {
         locationText: property.locationText,
         latitude: property.latitude,
         longitude: property.longitude,
+        initialStatus: isFullyPaidAtCreation
+          ? "pending"
+          : "awaiting_full_payment",
       },
       client,
     );
@@ -464,10 +598,13 @@ const createBooking = async (req, res) => {
     transactionStarted = false;
 
     booking.serviceRequests = serviceRequests;
+    booking.reviews = [];
 
     res.status(201).json({
       success: true,
-      message: "Booking created successfully",
+      message: isFullyPaidAtCreation
+        ? "Booking created successfully"
+        : `Booking created. Pay the 20% deposit within ${DEPOSIT_WINDOW_HOURS} hours to confirm it.`,
       data: { booking },
     });
   } catch (error) {
@@ -486,9 +623,416 @@ const createBooking = async (req, res) => {
   }
 };
 
+const payBookingDeposit = async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+
+  try {
+    const bookingId = toPositiveInteger(req.params.id);
+    const paymentPayload = normalizePaymentPayload(req.body);
+
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid booking id is required",
+      });
+    }
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    await RentalBooking.syncLifecycle(client);
+    await client.query(
+      "SELECT id FROM rental_bookings WHERE id = $1 FOR UPDATE",
+      [bookingId],
+    );
+
+    const booking = await RentalBooking.findById(bookingId, client);
+
+    if (!booking) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    if (parseInt(booking.tenantId, 10) !== parseInt(req.user.id, 10)) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(403).json({
+        success: false,
+        message: "You can only pay the deposit for your own booking",
+      });
+    }
+
+    if (booking.bookingStatus === "cancelled" || booking.paymentStatus === "expired") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: "This booking is no longer active because the deposit window expired",
+      });
+    }
+
+    if (booking.paymentStatus === "deposit_paid" || booking.paymentStatus === "paid") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "The deposit has already been paid for this booking",
+      });
+    }
+
+    if (booking.paymentStatus !== "deposit_pending") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "This booking is not waiting for a deposit payment",
+      });
+    }
+
+    const updatedBooking = await RentalBooking.update(
+      bookingId,
+      {
+        bookingStatus: "confirmed",
+        paymentStatus: Number(booking.remainingAmount) > 0 ? "deposit_paid" : "paid",
+        paymentMethod: paymentPayload.paymentMethod || booking.paymentMethod,
+        paymentReference: paymentPayload.paymentReference || null,
+        cardLast4: paymentPayload.cardLast4 || null,
+        depositPaidAt: new Date(),
+        remainingPaidAt:
+          Number(booking.remainingAmount) > 0 ? booking.remainingPaidAt : new Date(),
+      },
+      client,
+    );
+
+    if (updatedBooking.paymentStatus === "paid") {
+      await RentalBookingServiceRequest.activateForBooking(bookingId, client);
+    }
+
+    await attachBookingRelations([updatedBooking], client);
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    emitBookingUpdated(req, updatedBooking);
+
+    res.json({
+      success: true,
+      message:
+        updatedBooking.paymentStatus === "paid"
+          ? "Booking paid in full successfully"
+          : "Booking deposit paid successfully",
+      data: { booking: updatedBooking },
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+
+    console.error("Pay rental booking deposit error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error paying booking deposit",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+};
+
+const payBookingBalance = async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+
+  try {
+    const bookingId = toPositiveInteger(req.params.id);
+    const paymentPayload = normalizePaymentPayload(req.body);
+
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid booking id is required",
+      });
+    }
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    await RentalBooking.syncLifecycle(client);
+    await client.query(
+      "SELECT id FROM rental_bookings WHERE id = $1 FOR UPDATE",
+      [bookingId],
+    );
+
+    const booking = await RentalBooking.findById(bookingId, client);
+
+    if (!booking) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    if (parseInt(booking.tenantId, 10) !== parseInt(req.user.id, 10)) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(403).json({
+        success: false,
+        message: "You can only pay the remaining amount for your own booking",
+      });
+    }
+
+    if (booking.bookingStatus === "cancelled" || booking.paymentStatus === "expired") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: "This booking is no longer active",
+      });
+    }
+
+    if (booking.paymentStatus === "paid") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "This booking has already been paid in full",
+      });
+    }
+
+    if (booking.paymentStatus !== "deposit_paid") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "Pay the 20% deposit first before settling the remaining amount",
+      });
+    }
+
+    await RentalBooking.update(
+      bookingId,
+      {
+        bookingStatus: "confirmed",
+        paymentStatus: "paid",
+        paymentMethod: paymentPayload.paymentMethod || booking.paymentMethod,
+        paymentReference: paymentPayload.paymentReference || null,
+        cardLast4: paymentPayload.cardLast4 || booking.cardLast4 || null,
+        remainingPaidAt: new Date(),
+      },
+      client,
+    );
+
+    await RentalBookingServiceRequest.activateForBooking(bookingId, client);
+
+    const updatedBooking = await loadBookingWithRelations(bookingId, client);
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    emitBookingUpdated(req, updatedBooking);
+
+    res.json({
+      success: true,
+      message:
+        "Full payment received successfully. Service provider flow is now active for this booking.",
+      data: { booking: updatedBooking },
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+
+    console.error("Pay rental booking balance error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error paying the remaining booking amount",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+};
+
+const getBookingReviews = async (req, res) => {
+  try {
+    const bookingId = toPositiveInteger(req.params.id);
+
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid booking id is required",
+      });
+    }
+
+    await RentalBooking.syncLifecycle();
+
+    const booking = await RentalBooking.findById(bookingId);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    if (!canAccessBooking(booking, req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to view reviews for this booking",
+      });
+    }
+
+    const reviews = await RentalBookingReview.findByBookingId(bookingId);
+
+    res.json({
+      success: true,
+      data: {
+        bookingId,
+        reviews,
+      },
+    });
+  } catch (error) {
+    console.error("Get rental booking reviews error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching booking reviews",
+      error: error.message,
+    });
+  }
+};
+
+const saveBookingReview = async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+
+  try {
+    const bookingId = toPositiveInteger(req.params.id);
+    const rating = toPositiveInteger(req.body.rating);
+    const comment = req.body.comment ? String(req.body.comment).trim() : "";
+
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid booking id is required",
+      });
+    }
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: "rating must be a number from 1 to 5",
+      });
+    }
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    await RentalBooking.syncLifecycle(client);
+
+    const booking = await RentalBooking.findById(bookingId, client);
+
+    if (!booking) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    const reviewRoles = getReviewRolesForUser(booking, req.user.id);
+
+    if (!reviewRoles) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(403).json({
+        success: false,
+        message: "Only the tenant or owner of this booking can leave a review",
+      });
+    }
+
+    if (booking.bookingStatus === "cancelled") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "Cancelled bookings cannot be reviewed",
+      });
+    }
+
+    if (booking.paymentStatus !== "paid" || booking.bookingStatus !== "completed") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "Reviews can only be added after a fully paid booking is completed",
+      });
+    }
+
+    const review = await RentalBookingReview.upsert(
+      {
+        rentalBookingId: bookingId,
+        reviewerId: req.user.id,
+        revieweeId: reviewRoles.revieweeId,
+        reviewerRole: reviewRoles.reviewerRole,
+        revieweeRole: reviewRoles.revieweeRole,
+        rating,
+        comment: comment || null,
+      },
+      client,
+    );
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    res.json({
+      success: true,
+      message: "Booking review saved successfully",
+      data: { review },
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+
+    console.error("Save rental booking review error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error saving booking review",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   createBooking,
   getMyBookings,
   getOwnerBookings,
   getPropertyAvailability,
+  getBookingReviews,
+  payBookingDeposit,
+  payBookingBalance,
+  saveBookingReview,
 };
