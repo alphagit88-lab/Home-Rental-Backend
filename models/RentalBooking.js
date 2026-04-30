@@ -1,5 +1,18 @@
 const pool = require("../config/database");
 
+const ACTIVE_BOOKING_FILTER = `
+  (
+    rb.booking_status = 'confirmed'
+    OR (
+      rb.booking_status = 'pending'
+      AND (
+        rb.deposit_due_at IS NULL
+        OR rb.deposit_due_at >= NOW()
+      )
+    )
+  )
+`;
+
 const SELECT_FIELDS = `
   SELECT
     rb.id,
@@ -18,6 +31,11 @@ const SELECT_FIELDS = `
     rb.payment_reference AS "paymentReference",
     rb.card_last4 AS "cardLast4",
     rb.total_amount AS "totalAmount",
+    rb.deposit_amount AS "depositAmount",
+    rb.deposit_due_at AS "depositDueAt",
+    rb.deposit_paid_at AS "depositPaidAt",
+    rb.remaining_amount AS "remainingAmount",
+    rb.remaining_paid_at AS "remainingPaidAt",
     rb.notes,
     rb.created_at AS "createdAt",
     rb.updated_at AS "updatedAt",
@@ -34,6 +52,57 @@ const SELECT_FIELDS = `
 `;
 
 class RentalBooking {
+  static async syncLifecycle(client = pool) {
+    await client.query(
+      `
+        WITH expired_bookings AS (
+          UPDATE rental_bookings
+          SET
+            booking_status = 'cancelled',
+            payment_status = 'expired',
+            updated_at = NOW()
+          WHERE booking_status = 'pending'
+            AND payment_status = 'deposit_pending'
+            AND deposit_due_at IS NOT NULL
+            AND deposit_due_at < NOW()
+          RETURNING id
+        )
+        UPDATE rental_booking_service_requests rbsr
+        SET
+          request_status = 'cancelled',
+          updated_at = NOW()
+        FROM expired_bookings
+        WHERE rbsr.rental_booking_id = expired_bookings.id
+          AND rbsr.request_status IN ('awaiting_full_payment', 'pending', 'accepted')
+      `,
+    );
+
+    await client.query(
+      `
+        WITH completed_bookings AS (
+          UPDATE rental_bookings
+          SET
+            booking_status = 'completed',
+            updated_at = NOW()
+          WHERE booking_status = 'confirmed'
+            AND payment_status = 'paid'
+            AND check_out <= CURRENT_DATE
+          RETURNING id
+        )
+        UPDATE rental_booking_service_requests rbsr
+        SET
+          request_status = CASE
+            WHEN rbsr.request_status = 'accepted' THEN 'completed'
+            ELSE 'cancelled'
+          END,
+          updated_at = NOW()
+        FROM completed_bookings
+        WHERE rbsr.rental_booking_id = completed_bookings.id
+          AND rbsr.request_status IN ('awaiting_full_payment', 'pending', 'accepted')
+      `,
+    );
+  }
+
   static async findById(id, client = pool) {
     const result = await client.query(
       `
@@ -111,7 +180,7 @@ class RentalBooking {
     const values = [propertyId];
     const filters = [
       "rb.property_id = $1",
-      "rb.booking_status IN ('pending', 'confirmed')",
+      ACTIVE_BOOKING_FILTER,
     ];
 
     if (from) {
@@ -141,7 +210,7 @@ class RentalBooking {
       `
         ${SELECT_FIELDS}
         WHERE rb.property_id = $1
-          AND rb.booking_status IN ('pending', 'confirmed')
+          AND ${ACTIVE_BOOKING_FILTER}
           AND rb.check_in < $3
           AND rb.check_out > $2
         ORDER BY rb.check_in ASC
@@ -150,6 +219,50 @@ class RentalBooking {
     );
 
     return result.rows;
+  }
+
+  static async update(id, updates, client = pool) {
+    const columnMap = {
+      bookingStatus: "booking_status",
+      paymentStatus: "payment_status",
+      paymentMethod: "payment_method",
+      paymentReference: "payment_reference",
+      cardLast4: "card_last4",
+      depositPaidAt: "deposit_paid_at",
+      remainingPaidAt: "remaining_paid_at",
+      depositDueAt: "deposit_due_at",
+      depositAmount: "deposit_amount",
+      remainingAmount: "remaining_amount",
+      notes: "notes",
+    };
+
+    const assignments = [];
+    const values = [];
+    let paramCount = 1;
+
+    Object.entries(columnMap).forEach(([key, columnName]) => {
+      if (updates[key] !== undefined) {
+        assignments.push(`${columnName} = $${paramCount++}`);
+        values.push(updates[key]);
+      }
+    });
+
+    if (assignments.length === 0) {
+      return this.findById(id, client);
+    }
+
+    values.push(id);
+
+    await client.query(
+      `
+        UPDATE rental_bookings
+        SET ${assignments.join(", ")}, updated_at = NOW()
+        WHERE id = $${paramCount}
+      `,
+      values,
+    );
+
+    return this.findById(id, client);
   }
 
   static async create(data, client = pool) {
@@ -171,6 +284,11 @@ class RentalBooking {
           payment_reference,
           card_last4,
           total_amount,
+          deposit_amount,
+          deposit_due_at,
+          deposit_paid_at,
+          remaining_amount,
+          remaining_paid_at,
           notes,
           created_at,
           updated_at
@@ -178,6 +296,7 @@ class RentalBooking {
         VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9,
           $10, $11, $12, $13, $14, $15, $16,
+          $17, $18, $19, $20, $21,
           NOW(), NOW()
         )
         RETURNING id
@@ -198,6 +317,11 @@ class RentalBooking {
         data.paymentReference || null,
         data.cardLast4 || null,
         data.totalAmount,
+        data.depositAmount ?? null,
+        data.depositDueAt || null,
+        data.depositPaidAt || null,
+        data.remainingAmount ?? null,
+        data.remainingPaidAt || null,
         data.notes || null,
       ],
     );

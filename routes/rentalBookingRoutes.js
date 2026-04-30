@@ -6,11 +6,17 @@ const {
   getMyBookings,
   getOwnerBookings,
   getPropertyAvailability,
+  getBookingReviews,
+  payBookingBalance,
+  payBookingDeposit,
+  saveBookingReview,
 } = require("../controllers/rentalBookingController");
 
 const {
   validateCreateRentalBooking,
   validateRentalBookingDateQuery,
+  validateRentalBookingPayment,
+  validateRentalBookingReview,
 } = require("../middleware/rentalBookingValidation");
 
 const { authenticate, verifyAppRole } = require("../middleware/authMiddleware");
@@ -42,6 +48,35 @@ router.post(
   verifyAppRole(["tenant"]),
   validateCreateRentalBooking,
   createBooking,
+);
+
+router.post(
+  "/:id/pay-deposit",
+  authenticate,
+  verifyAppRole(["tenant"]),
+  validateRentalBookingPayment,
+  payBookingDeposit,
+);
+
+router.post(
+  "/:id/pay-balance",
+  authenticate,
+  verifyAppRole(["tenant"]),
+  validateRentalBookingPayment,
+  payBookingBalance,
+);
+
+router.get(
+  "/:id/reviews",
+  authenticate,
+  getBookingReviews,
+);
+
+router.post(
+  "/:id/reviews",
+  authenticate,
+  validateRentalBookingReview,
+  saveBookingReview,
 );
 
 module.exports = router;

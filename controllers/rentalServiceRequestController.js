@@ -1,4 +1,5 @@
 const ServiceCategory = require("../models/ServiceCategory");
+const RentalBooking = require("../models/RentalBooking");
 const RentalBookingServiceRequest = require("../models/RentalBookingServiceRequest");
 const RentalServiceProviderCategory = require("../models/RentalServiceProviderCategory");
 const ServiceArea = require("../models/ServiceArea");
@@ -142,6 +143,9 @@ const updateProviderCategories = async (req, res) => {
 const getProviderNearbyRequests = async (req, res) => {
   try {
     const limit = toPositiveInteger(req.query.limit) || 100;
+
+    await RentalBooking.syncLifecycle();
+
     const requests = await RentalBookingServiceRequest.findNearbyForProvider(
       req.user.id,
       { limit },
@@ -168,6 +172,9 @@ const getProviderAssignedRequests = async (req, res) => {
   try {
     const limit = toPositiveInteger(req.query.limit) || 100;
     const status = req.query.status ? String(req.query.status).trim() : undefined;
+
+    await RentalBooking.syncLifecycle();
+
     const requests = await RentalBookingServiceRequest.findAssignedToProvider(
       req.user.id,
       { status, limit },
@@ -193,6 +200,9 @@ const getProviderAssignedRequests = async (req, res) => {
 const getProviderMapData = async (req, res) => {
   try {
     const limit = toPositiveInteger(req.query.limit) || 100;
+
+    await RentalBooking.syncLifecycle();
+
     const [nearbyRequests, assignedRequests, serviceAreas] = await Promise.all([
       RentalBookingServiceRequest.findNearbyForProvider(req.user.id, { limit }),
       RentalBookingServiceRequest.findAssignedToProvider(req.user.id, { limit }),
@@ -247,6 +257,8 @@ const respondToRequest = async (req, res) => {
         message: "action must be either accept or reject",
       });
     }
+
+    await RentalBooking.syncLifecycle();
 
     const result = await RentalBookingServiceRequest.respond({
       requestId,
