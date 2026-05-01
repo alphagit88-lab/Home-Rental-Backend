@@ -19,7 +19,9 @@ const AVAILABLE_TO_FIELDS = [
   "availableEndDate",
   "availabilityEnd",
 ];
+const ACTIVE_STATUS_FIELDS = ["isActive", "is_active"];
 const INVALID_DATE = Symbol("INVALID_DATE");
+const INVALID_BOOLEAN = Symbol("INVALID_BOOLEAN");
 
 const normalizeStringArray = (value) => {
   if (Array.isArray(value)) {
@@ -86,6 +88,34 @@ const toOptionalDateString = (value) => {
   }
 
   return normalizedValue;
+};
+
+const toOptionalBoolean = (value) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "string") {
+    const normalizedValue = value.trim().toLowerCase();
+
+    if (normalizedValue === "true" || normalizedValue === "1") {
+      return true;
+    }
+
+    if (normalizedValue === "false" || normalizedValue === "0") {
+      return false;
+    }
+  }
+
+  return INVALID_BOOLEAN;
 };
 
 const getFirstProvidedField = (source, fieldNames) => {
@@ -183,12 +213,14 @@ const createProperty = async (req, res) => {
       AVAILABLE_FROM_FIELDS,
     );
     const availableToInput = getFirstProvidedField(req.body, AVAILABLE_TO_FIELDS);
+    const isActiveInput = getFirstProvidedField(req.body, ACTIVE_STATUS_FIELDS);
 
     const parsedBedrooms = toPositiveInteger(bedrooms);
     const parsedBathrooms = toPositiveInteger(bathrooms);
     const parsedMonthlyRent = toOptionalMoney(monthlyRentInput);
     const parsedAvailableFrom = toOptionalDateString(availableFromInput);
     const parsedAvailableTo = toOptionalDateString(availableToInput);
+    const parsedIsActive = toOptionalBoolean(isActiveInput);
 
     if (!title || !propertyType || !listingType || !locationText) {
       return res.status(400).json({
@@ -219,6 +251,13 @@ const createProperty = async (req, res) => {
       });
     }
 
+    if (parsedIsActive === INVALID_BOOLEAN) {
+      return res.status(400).json({
+        success: false,
+        message: "isActive must be a valid boolean value",
+      });
+    }
+
     if (!validateAvailabilityRange(parsedAvailableFrom, parsedAvailableTo)) {
       return res.status(400).json({
         success: false,
@@ -245,6 +284,7 @@ const createProperty = async (req, res) => {
       longitude: coordinates.longitude,
       galleryUrls: normalizeStringArray(galleryUrls),
       description: description ? String(description).trim() : null,
+      isActive: parsedIsActive === undefined ? true : parsedIsActive,
     });
 
     res.status(201).json({
@@ -293,12 +333,14 @@ const updateProperty = async (req, res) => {
       AVAILABLE_FROM_FIELDS,
     );
     const availableToInput = getFirstProvidedField(req.body, AVAILABLE_TO_FIELDS);
+    const isActiveInput = getFirstProvidedField(req.body, ACTIVE_STATUS_FIELDS);
 
     const parsedBedrooms = toPositiveInteger(req.body.bedrooms);
     const parsedBathrooms = toPositiveInteger(req.body.bathrooms);
     const parsedMonthlyRent = toOptionalMoney(monthlyRentInput);
     const parsedAvailableFrom = toOptionalDateString(availableFromInput);
     const parsedAvailableTo = toOptionalDateString(availableToInput);
+    const parsedIsActive = toOptionalBoolean(isActiveInput);
 
     if (
       (req.body.bedrooms !== undefined && !parsedBedrooms) ||
@@ -321,6 +363,13 @@ const updateProperty = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "availableFrom and availableTo must use the YYYY-MM-DD format",
+      });
+    }
+
+    if (parsedIsActive === INVALID_BOOLEAN) {
+      return res.status(400).json({
+        success: false,
+        message: "isActive must be a valid boolean value",
       });
     }
 
@@ -371,6 +420,8 @@ const updateProperty = async (req, res) => {
         req.body.description !== undefined
           ? String(req.body.description).trim()
           : existingProperty.description,
+      isActive:
+        isActiveInput === undefined ? existingProperty.isActive : parsedIsActive,
     });
 
     res.json({
