@@ -39,7 +39,7 @@ class Property {
   static async findByOwner(ownerId) {
     const query = `
       ${SELECT_FIELDS}
-      WHERE owner_id = $1 AND is_active = TRUE
+      WHERE owner_id = $1
       ORDER BY created_at DESC
     `;
     const result = await pool.query(query, [ownerId]);
@@ -49,7 +49,7 @@ class Property {
   static async findOwnedById(id, ownerId) {
     const query = `
       ${SELECT_FIELDS}
-      WHERE id = $1 AND owner_id = $2 AND is_active = TRUE
+      WHERE id = $1 AND owner_id = $2
       LIMIT 1
     `;
     const result = await pool.query(query, [id, ownerId]);
@@ -79,7 +79,7 @@ class Property {
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, NOW(), NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW())
       RETURNING
         id,
         owner_id AS "ownerId",
@@ -120,6 +120,7 @@ class Property {
       data.longitude,
       JSON.stringify(data.galleryUrls || []),
       data.description || null,
+      data.isActive ?? true,
     ];
 
     const result = await pool.query(query, values);
@@ -142,6 +143,7 @@ class Property {
       longitude: "longitude",
       galleryUrls: "gallery_urls",
       description: "description",
+      isActive: "is_active",
     };
 
     const updateFields = [];
