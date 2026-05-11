@@ -170,9 +170,32 @@ const validateRentalBookingReview = (req, res, next) => {
   next();
 };
 
+const validateRentalBookingMessage = (req, res, next) => {
+  const messageText = String(
+    req.body.messageText || req.body.message_text || req.body.message || "",
+  ).trim();
+
+  if (!messageText) {
+    return res.status(400).json({
+      success: false,
+      message: "messageText is required",
+    });
+  }
+
+  if (messageText.length > 2000) {
+    return res.status(400).json({
+      success: false,
+      message: "messageText must be 2000 characters or fewer",
+    });
+  }
+
+  next();
+};
+
 module.exports = {
   validateCreateRentalBooking,
   validateRentalBookingDateQuery,
+  validateRentalBookingMessage,
   validateRentalBookingPayment,
   validateRentalBookingReview,
 };

@@ -1,5 +1,6 @@
 const pool = require("../config/database");
 const RentalBooking = require("../models/RentalBooking");
+const RentalBookingMessage = require("../models/RentalBookingMessage");
 const ServiceCategory = require("../models/ServiceCategory");
 const RentalBookingReview = require("../models/RentalBookingReview");
 const RentalBookingServiceRequest = require("../models/RentalBookingServiceRequest");
@@ -250,6 +251,15 @@ const getReviewRolesForUser = (booking, userId) => {
   return null;
 };
 
+const emitRentalEventToUser = (io, userId, eventName, payload) => {
+  if (!io || !userId) {
+    return;
+  }
+
+  io.to(`user_${userId}`).emit(eventName, payload);
+  io.to(`supplier_${userId}`).emit(eventName, payload);
+};
+
 const emitBookingUpdated = (req, booking, eventName = "rental_booking_updated") => {
   const io = req.app.get("io");
 
@@ -257,8 +267,34 @@ const emitBookingUpdated = (req, booking, eventName = "rental_booking_updated") 
     return;
   }
 
-  io.to(`user_${booking.tenantId}`).emit(eventName, { booking });
-  io.to(`supplier_${booking.ownerId}`).emit(eventName, { booking });
+  emitRentalEventToUser(io, booking.tenantId, eventName, { booking });
+  emitRentalEventToUser(io, booking.ownerId, eventName, { booking });
+};
+
+const emitBookingMessageCreated = (req, booking, message) => {
+  const io = req.app.get("io");
+
+  if (!io || !booking || !message) {
+    return;
+  }
+
+  const payload = {
+    bookingId: booking.id,
+    message,
+  };
+
+  emitRentalEventToUser(
+    io,
+    booking.tenantId,
+    "rental_booking_message_created",
+    payload,
+  );
+  emitRentalEventToUser(
+    io,
+    booking.ownerId,
+    "rental_booking_message_created",
+    payload,
+  );
 };
 
 const getMyBookings = async (req, res) => {
@@ -869,6 +905,239 @@ const payBookingBalance = async (req, res) => {
   }
 };
 
+const confirmBooking = async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
+
+  try {
+    const bookingId = toPositiveInteger(req.params.id);
+
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid booking id is required",
+      });
+    }
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    await RentalBooking.syncLifecycle(client);
+    await client.query(
+      "SELECT id FROM rental_bookings WHERE id = $1 FOR UPDATE",
+      [bookingId],
+    );
+
+    const booking = await RentalBooking.findById(bookingId, client);
+
+    if (!booking) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    if (parseInt(booking.ownerId, 10) !== parseInt(req.user.id, 10)) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(403).json({
+        success: false,
+        message: "You can only confirm booking requests for your own properties",
+      });
+    }
+
+    if (booking.bookingStatus === "cancelled" || booking.paymentStatus === "expired") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(409).json({
+        success: false,
+        message: "This booking request is no longer active",
+      });
+    }
+
+    if (booking.bookingStatus !== "pending") {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(400).json({
+        success: false,
+        message: "This booking request has already been processed",
+      });
+    }
+
+    const updatedBooking = await RentalBooking.update(
+      bookingId,
+      { bookingStatus: "confirmed" },
+      client,
+    );
+
+    await attachBookingRelations([updatedBooking], client);
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    emitBookingUpdated(req, updatedBooking);
+
+    res.json({
+      success: true,
+      message:
+        "Booking request confirmed successfully. The tenant can now pay the 20% deposit.",
+      data: { booking: updatedBooking },
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+
+    console.error("Confirm rental booking error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error confirming booking request",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+};
+
+const getBookingMessages = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const bookingId = toPositiveInteger(req.params.id);
+
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid booking id is required",
+      });
+    }
+
+    await RentalBooking.syncLifecycle(client);
+
+    const booking = await RentalBooking.findById(bookingId, client);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    if (!canAccessBooking(booking, req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to view messages for this booking",
+      });
+    }
+
+    await RentalBookingMessage.markAsReadForUser(bookingId, req.user.id, client);
+    const messages = await RentalBookingMessage.findByBookingId(bookingId, client);
+
+    res.json({
+      success: true,
+      data: {
+        bookingId,
+        messages,
+      },
+    });
+  } catch (error) {
+    console.error("Get rental booking messages error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching booking messages",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+};
+
+const sendBookingMessage = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const bookingId = toPositiveInteger(req.params.id);
+    const messageText = String(
+      req.body.messageText || req.body.message_text || req.body.message || "",
+    ).trim();
+
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid booking id is required",
+      });
+    }
+
+    if (!messageText) {
+      return res.status(400).json({
+        success: false,
+        message: "messageText is required",
+      });
+    }
+
+    await RentalBooking.syncLifecycle(client);
+
+    const booking = await RentalBooking.findById(bookingId, client);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found",
+      });
+    }
+
+    const participantRoles = getReviewRolesForUser(booking, req.user.id);
+
+    if (!participantRoles) {
+      return res.status(403).json({
+        success: false,
+        message: "Only the tenant or owner of this booking can send messages",
+      });
+    }
+
+    const recipientId =
+      participantRoles.reviewerRole === "tenant"
+        ? booking.ownerId
+        : booking.tenantId;
+
+    const message = await RentalBookingMessage.create(
+      {
+        rentalBookingId: bookingId,
+        senderId: req.user.id,
+        recipientId,
+        messageText,
+      },
+      client,
+    );
+
+    emitBookingMessageCreated(req, booking, message);
+
+    res.status(201).json({
+      success: true,
+      message: "Booking message sent successfully",
+      data: {
+        bookingId,
+        bookingMessage: message,
+      },
+    });
+  } catch (error) {
+    console.error("Send rental booking message error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error sending booking message",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+};
+
 const getBookingReviews = async (req, res) => {
   try {
     const bookingId = toPositiveInteger(req.params.id);
@@ -1027,7 +1296,9 @@ const saveBookingReview = async (req, res) => {
 };
 
 module.exports = {
+  confirmBooking,
   createBooking,
+  getBookingMessages,
   getMyBookings,
   getOwnerBookings,
   getPropertyAvailability,
@@ -1035,4 +1306,5 @@ module.exports = {
   payBookingDeposit,
   payBookingBalance,
   saveBookingReview,
+  sendBookingMessage,
 };

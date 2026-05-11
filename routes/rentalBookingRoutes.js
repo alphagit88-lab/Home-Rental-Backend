@@ -2,7 +2,9 @@ const express = require("express");
 const router = express.Router();
 
 const {
+  confirmBooking,
   createBooking,
+  getBookingMessages,
   getMyBookings,
   getOwnerBookings,
   getPropertyAvailability,
@@ -10,11 +12,13 @@ const {
   payBookingBalance,
   payBookingDeposit,
   saveBookingReview,
+  sendBookingMessage,
 } = require("../controllers/rentalBookingController");
 
 const {
   validateCreateRentalBooking,
   validateRentalBookingDateQuery,
+  validateRentalBookingMessage,
   validateRentalBookingPayment,
   validateRentalBookingReview,
 } = require("../middleware/rentalBookingValidation");
@@ -64,6 +68,26 @@ router.post(
   verifyAppRole(["tenant"]),
   validateRentalBookingPayment,
   payBookingBalance,
+);
+
+router.post(
+  "/:id/confirm",
+  authenticate,
+  verifyAppRole(["owner"]),
+  confirmBooking,
+);
+
+router.get(
+  "/:id/messages",
+  authenticate,
+  getBookingMessages,
+);
+
+router.post(
+  "/:id/messages",
+  authenticate,
+  validateRentalBookingMessage,
+  sendBookingMessage,
 );
 
 router.get(
