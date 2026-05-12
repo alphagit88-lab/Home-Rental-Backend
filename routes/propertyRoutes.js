@@ -7,24 +7,25 @@ const {
   updateProperty,
 } = require("../controllers/propertyController");
 const { authenticate, verifyAppRole } = require("../middleware/authMiddleware");
+const sharedRentalRoles = ["tenant", "owner", "service_provider"];
 
 router.get("/", getActiveProperties);
 router.get(
   "/my",
   authenticate,
-  verifyAppRole(["owner"]),
+  verifyAppRole(sharedRentalRoles),
   getMyProperties,
 );
 router.post(
   "/",
   authenticate,
-  verifyAppRole(["owner"]),
+  verifyAppRole(sharedRentalRoles),
   createProperty,
 );
 router.put(
   "/:id",
   authenticate,
-  verifyAppRole(["owner"]),
+  verifyAppRole(sharedRentalRoles),
   updateProperty,
 );
 

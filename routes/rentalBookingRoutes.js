@@ -24,6 +24,7 @@ const {
 } = require("../middleware/rentalBookingValidation");
 
 const { authenticate, verifyAppRole } = require("../middleware/authMiddleware");
+const sharedRentalRoles = ["tenant", "owner", "service_provider"];
 
 router.get(
   "/property/:propertyId/availability",
@@ -34,14 +35,14 @@ router.get(
 router.get(
   "/my",
   authenticate,
-  verifyAppRole(["tenant"]),
+  verifyAppRole(sharedRentalRoles),
   getMyBookings,
 );
 
 router.get(
   "/owner",
   authenticate,
-  verifyAppRole(["owner"]),
+  verifyAppRole(sharedRentalRoles),
   validateRentalBookingDateQuery,
   getOwnerBookings,
 );
@@ -49,7 +50,7 @@ router.get(
 router.post(
   "/",
   authenticate,
-  verifyAppRole(["tenant"]),
+  verifyAppRole(sharedRentalRoles),
   validateCreateRentalBooking,
   createBooking,
 );
@@ -57,7 +58,7 @@ router.post(
 router.post(
   "/:id/pay-deposit",
   authenticate,
-  verifyAppRole(["tenant"]),
+  verifyAppRole(sharedRentalRoles),
   validateRentalBookingPayment,
   payBookingDeposit,
 );
@@ -65,7 +66,7 @@ router.post(
 router.post(
   "/:id/pay-balance",
   authenticate,
-  verifyAppRole(["tenant"]),
+  verifyAppRole(sharedRentalRoles),
   validateRentalBookingPayment,
   payBookingBalance,
 );
@@ -73,7 +74,7 @@ router.post(
 router.post(
   "/:id/confirm",
   authenticate,
-  verifyAppRole(["owner"]),
+  verifyAppRole(sharedRentalRoles),
   confirmBooking,
 );
 
