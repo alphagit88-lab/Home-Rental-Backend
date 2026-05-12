@@ -1,7 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const supplierController = require('../controllers/supplierController');
-const { verifyToken, verifyRole, verifyAdmin } = require('../middleware/authMiddleware');
+const {
+  verifyToken,
+  verifyRole,
+  verifyAdmin,
+  verifyRoleOrAppRole,
+} = require('../middleware/authMiddleware');
+const sharedRentalRoles = ['tenant', 'owner', 'service_provider'];
 
 // Get supplier availability
 router.get('/availability', verifyToken, verifyRole(['supplier', 'admin']), supplierController.getAvailability);
@@ -10,9 +16,24 @@ router.get('/availability', verifyToken, verifyRole(['supplier', 'admin']), supp
 router.post('/availability', verifyToken, verifyRole(['supplier', 'admin']), supplierController.updateAvailability);
 
 // Service Areas
-router.get('/service-areas', verifyToken, verifyRole(['supplier', 'admin']), supplierController.getServiceAreas);
-router.post('/service-areas', verifyToken, verifyRole(['supplier', 'admin']), supplierController.createServiceArea);
-router.delete('/service-areas/:id', verifyToken, verifyRole(['supplier', 'admin']), supplierController.deleteServiceArea);
+router.get(
+  '/service-areas',
+  verifyToken,
+  verifyRoleOrAppRole({roles: ['supplier'], appRoles: sharedRentalRoles}),
+  supplierController.getServiceAreas,
+);
+router.post(
+  '/service-areas',
+  verifyToken,
+  verifyRoleOrAppRole({roles: ['supplier'], appRoles: sharedRentalRoles}),
+  supplierController.createServiceArea,
+);
+router.delete(
+  '/service-areas/:id',
+  verifyToken,
+  verifyRoleOrAppRole({roles: ['supplier'], appRoles: sharedRentalRoles}),
+  supplierController.deleteServiceArea,
+);
 
 // Bin Pricing Setup
 router.get('/bin-sizes', verifyToken, verifyRole(['supplier', 'admin']), supplierController.getBinSizes);

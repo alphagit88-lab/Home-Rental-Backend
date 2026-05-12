@@ -11,46 +11,47 @@ const {
 } = require("../controllers/rentalServiceRequestController");
 
 const { authenticate, verifyAppRole } = require("../middleware/authMiddleware");
+const sharedRentalRoles = ["tenant", "owner", "service_provider"];
 
 router.get(
   "/provider/categories",
   authenticate,
-  verifyAppRole(["service_provider"]),
+  verifyAppRole(sharedRentalRoles),
   getProviderCategories,
 );
 
 router.put(
   "/provider/categories",
   authenticate,
-  verifyAppRole(["service_provider"]),
+  verifyAppRole(sharedRentalRoles),
   updateProviderCategories,
 );
 
 router.get(
   "/provider/nearby",
   authenticate,
-  verifyAppRole(["service_provider"]),
+  verifyAppRole(sharedRentalRoles),
   getProviderNearbyRequests,
 );
 
 router.get(
   "/provider/my",
   authenticate,
-  verifyAppRole(["service_provider"]),
+  verifyAppRole(sharedRentalRoles),
   getProviderAssignedRequests,
 );
 
 router.get(
   "/provider/map",
   authenticate,
-  verifyAppRole(["service_provider"]),
+  verifyAppRole(sharedRentalRoles),
   getProviderMapData,
 );
 
 router.post(
   "/:id/respond",
   authenticate,
-  verifyAppRole(["service_provider"]),
+  verifyAppRole(sharedRentalRoles),
   respondToRequest,
 );
 

@@ -225,7 +225,6 @@ class RentalBookingServiceRequest {
           FROM rental_booking_service_requests rbsr
           JOIN home_rental_accounts hra
             ON hra.user_id = $1
-           AND hra.app_role = 'service_provider'
            AND hra.is_active = TRUE
           JOIN rental_service_provider_categories rspc
             ON rspc.provider_id = $1
@@ -352,7 +351,6 @@ class RentalBookingServiceRequest {
         FROM rental_booking_service_requests rbsr
         JOIN home_rental_accounts hra
           ON hra.user_id = $1
-         AND hra.app_role = 'service_provider'
          AND hra.is_active = TRUE
         JOIN rental_bookings rb
           ON rb.id = rbsr.rental_booking_id

@@ -64,6 +64,30 @@ const verifyAppRole = (appRoles, options = {}) => {
   };
 };
 
+const verifyRoleOrAppRole = ({ roles = [], appRoles = [], allowAdmin = true } = {}) => {
+  return (req, res, next) => {
+    if (allowAdmin && req.user.role === 'admin') {
+      return next();
+    }
+
+    const hasSystemRole =
+      Array.isArray(roles) && roles.includes(req.user.role);
+    const hasAppRole =
+      Array.isArray(appRoles)
+      && req.user.appRole
+      && appRoles.includes(req.user.appRole);
+
+    if (!hasSystemRole && !hasAppRole) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: insufficient permissions',
+      });
+    }
+
+    next();
+  };
+};
+
 module.exports = {
   authenticate,
   verifyToken: authenticate,
@@ -71,4 +95,5 @@ module.exports = {
   verifyAdmin: requireAdmin,
   verifyRole,
   verifyAppRole,
+  verifyRoleOrAppRole,
 };
